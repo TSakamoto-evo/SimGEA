@@ -1,0 +1,182 @@
+initialize() {
+	defineConstant("un", 0.0); // mutation rate at neutral loci
+	
+	s_list = c(0.001, 0.003, 0.01);	
+	defineConstant("s_dist", sample(s_list, 3, replace=F));
+
+	initializeTreeSeq();
+
+	// neutral mutation
+	initializeMutationType("m1", 0.5, "f", 0.0);
+
+	// an m2 mutation is "A"
+	initializeMutationType("m2", 0.5, "f", 0.0);
+	m2.convertToSubstitution = F;
+	
+	// an m3 mutation is "a"
+	initializeMutationType("m3", 0.5, "f", 0.0);
+	m3.convertToSubstitution = F;
+	
+	// enforce mutually exclusive replacement
+	c(m2,m3).mutationStackGroup = 4;
+	c(m2,m3).mutationStackPolicy = 'l';
+	
+	pos_dic = Dictionary();
+	pos = c();
+	
+	initializeGenomicElementType("g1", m1, 1.0);
+	initializeGenomicElementType("g2", c(m2,m3), c(1.0, 1.0));
+	
+	reco_rate = c();
+	reco_pos = c();
+	
+	mut_rate = c();
+	mut_pos = c();
+	
+	for(i in 0:199){
+		if(i != 32 & i != 99 & i != 166){
+			initializeGenomicElement(g1, gene_length*i, gene_length*(i+1)-1);
+			
+			mut_rate = c(mut_rate, un);
+			mut_pos = c(mut_pos, gene_length*(i+1)-1);
+		}else{
+			initializeGenomicElement(g1, gene_length*i, gene_length*i + asInteger(gene_length/2) - 1);
+			initializeGenomicElement(g2, gene_length*i + asInteger(gene_length/2), gene_length*i + asInteger(gene_length/2));
+			initializeGenomicElement(g1, gene_length*i + asInteger(gene_length/2) + 1, gene_length*(i+1)-1);
+			
+			pos_dic.setValue(gene_length*i + asInteger(gene_length/2), asInteger((i - 32) / 67));
+			pos = c(pos, gene_length*i + asInteger(gene_length/2));
+			
+			mut_rate = c(mut_rate, un, us, un);
+			mut_pos = c(mut_pos, gene_length*i + asInteger(gene_length/2) - 1, gene_length*i + asInteger(gene_length/2), gene_length*(i+1)-1);
+		}
+		
+		if(i != 0){
+			reco_rate = c(reco_rate, r2, r1);
+			reco_pos = c(reco_pos, gene_length*i, gene_length*(i+1)-1);
+		}else{
+			reco_rate = c(reco_rate, r1);
+			reco_pos = c(reco_pos, gene_length*(i+1)-1);
+		}
+	}
+	
+	initializeMutationRate(mut_rate, mut_pos);
+	initializeRecombinationRate(reco_rate, reco_pos);
+	
+	defineConstant("pos_list", pos);
+	defineConstant("pos_id", pos_dic);
+}
+
+1 early() {
+	optima = readFile(optimaFile);
+	subpopCount = length(optima);
+	
+	defineGlobal("list_optima", optima);
+	defineGlobal("subpopCount", subpopCount);
+	
+	L = asInteger(sqrt(subpopCount));
+
+	for(i in 1:subpopCount){
+		sim.addSubpop(i, asInteger(N));
+	}
+	
+	for(i in 1:L){
+		for(j in 1:L){
+			index = (i-1)*L + (j-1);
+			if(i > 1){
+				index1 = (i-2)*L + (j-1);
+				sim.subpopulations[index].setMigrationRates(index1+1, m);
+			}
+			if(i < L){
+				index1 = i*L + (j-1);
+				sim.subpopulations[index].setMigrationRates(index1+1, m);
+			}
+			if(j > 1){
+				index1 = (i-1)*L + (j-2);
+				sim.subpopulations[index].setMigrationRates(index1+1, m);
+			}
+			if(j < L){
+				index1 = (i-1)*L + j;
+				sim.subpopulations[index].setMigrationRates(index1+1, m);
+			}
+		}	
+	}
+	
+	// create the canonical mutation objects
+	target = sim.subpopulations[0].haplosomes[0];
+
+	target.addNewMutation(m2, s_dist / 2, pos_list);
+	defineConstant("MUT2", target.mutations);
+	target.removeMutations();
+	
+	target.addNewMutation(m3, -s_dist / 2, pos_list);
+	defineConstant("MUT3", target.mutations);
+	target.removeMutations();
+	
+	for(i in 0:(length(pos_list) - 1)){	
+		for(j in 0:(subpopCount - 1)){
+			for(k in 0:(2 * N - 1)){
+				which = runif(1);
+				
+				if(which > 0.5){
+					sim.subpopulations[j].haplosomes[k].addMutations(MUT2[i]);
+				}else{
+					sim.subpopulations[j].haplosomes[k].addMutations(MUT3[i]);
+				}
+			}
+		}
+	}
+}
+
+mutation(m2) {
+	// unique down to the canonical m2 mutation
+	return MUT2[pos_id.getValue(mut.position)];
+}
+mutation(m3) {
+	// unique down to the canonical m3 mutation
+	return MUT3[pos_id.getValue(mut.position)];
+}
+
+mutationEffect(m2) {
+	return 1.0;
+}
+mutationEffect(m3) {
+	return 1.0;
+}
+
+1:400000 late() {
+	for(i in 0:(subpopCount - 1)){
+		inds = sim.subpopulations[i].individuals;
+		phenotypes = inds.sumOfMutationsOfType(m2) + inds.sumOfMutationsOfType(m3);	
+		inds.fitnessScaling = exp(phenotypes * asFloat(list_optima[i]));
+	}
+	
+	if(sim.cycle % 1000 == 0){
+		print(asString(sim.cycle));
+	}
+}
+
+400000 late(){
+	muts = c(sim.mutationsOfType(m2), sim.mutationsOfType(m3));
+	defineGlobal("ret", "");
+	for(i in muts){
+		if(i.selectionCoeff > 0){
+			defineGlobal("list_mut_effect", paste(asString(sim.cycle), i.position, i.selectionCoeff * 2, sep="\t"));
+		
+			for(j in 0:(subpopCount - 1)){
+				freqs = sim.mutationFrequencies(sim.subpopulations[j], i);
+				defineGlobal("list_mut_effect", paste(list_mut_effect, freqs, sep="\t"));
+			}
+			
+			if(ret == ""){
+				defineGlobal("ret", list_mut_effect);
+			}else{
+				defineGlobal("ret", paste(ret, list_mut_effect, sep="\n"));
+			}
+		}
+	}
+	writeFile("mean_freq_effect.txt", ret);
+	
+	sim.treeSeqOutput("slim_local_adaptation.trees");
+	sim.simulationFinished();
+}
